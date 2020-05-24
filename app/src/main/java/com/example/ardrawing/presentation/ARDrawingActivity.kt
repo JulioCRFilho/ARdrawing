@@ -3,6 +3,7 @@ package com.example.ardrawing.presentation
 import android.content.Intent
 import androidx.appcompat.app.AppCompatActivity
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.viewModels
 import androidx.databinding.DataBindingUtil
@@ -11,17 +12,12 @@ import com.example.ardrawing.databinding.ActivityArdrawingBinding
 import com.example.ardrawing.interactor.ARDrawingInterface
 import com.example.ardrawing.utils.CameraPermissionHelper
 import com.example.ardrawing.viewModel.ARDrawingViewModel
-import com.google.ar.core.ArCoreApk
-import com.google.ar.core.Pose
-import com.google.ar.core.Session
+import com.google.ar.core.*
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException
 import com.google.ar.sceneform.AnchorNode
 import com.google.ar.sceneform.Node
 import com.google.ar.sceneform.math.Vector3
-import com.google.ar.sceneform.rendering.Color
-import com.google.ar.sceneform.rendering.MaterialFactory
-import com.google.ar.sceneform.rendering.Renderable
-import com.google.ar.sceneform.rendering.ShapeFactory
+import com.google.ar.sceneform.rendering.*
 import com.google.ar.sceneform.ux.ArFragment
 import com.google.ar.sceneform.ux.TransformableNode
 
@@ -31,7 +27,7 @@ class ARDrawingActivity : AppCompatActivity(), ARDrawingInterface {
     private val viewModel: ARDrawingViewModel by viewModels()
     lateinit var selectedRenderable: Renderable
     lateinit var arFragment: ArFragment
-    lateinit var node: Node
+    var anchorNode: AnchorNode? = null
     var mSession: Session? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,19 +35,21 @@ class ARDrawingActivity : AppCompatActivity(), ARDrawingInterface {
         binding = DataBindingUtil.setContentView(this, R.layout.activity_ardrawing)
         binding.viewModel = viewModel
         viewModel.interactor = this
-        initVars()
-        requestPermission()
-    }
-
-    private fun initVars() {
         cameraPermissionHelper = CameraPermissionHelper()
+        requestPermission()
     }
 
     private fun initArCore() {
         if (cameraPermissionHelper.hasCameraPermission(this)) {
             arFragment = supportFragmentManager.findFragmentById(R.id.ux_fragment) as ArFragment
-            mSession = Session(this)
-            selectRenderable()
+            mSession = arFragment.arSceneView.session
+            arFragment.arSceneView.session?.config?.planeFindingMode =
+                Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+            arFragment.planeDiscoveryController.hide()
+            arFragment.planeDiscoveryController.setInstructionView(null)
+            arFragment.arSceneView.planeRenderer.isEnabled = false
+
+            setArFragmentListener()
         } else {
             requestPermission()
         }
@@ -69,7 +67,7 @@ class ARDrawingActivity : AppCompatActivity(), ARDrawingInterface {
                     ArCoreApk.InstallStatus.INSTALLED -> initArCore()
                     ArCoreApk.InstallStatus.INSTALL_REQUESTED -> ArCoreApk.getInstance()
                         .requestInstall(this, true)
-                    null -> onResume()
+                    null -> verifyArCoreAPK()
                 }
             }
         } catch (e: UnavailableUserDeclinedInstallationException) {
@@ -83,8 +81,10 @@ class ARDrawingActivity : AppCompatActivity(), ARDrawingInterface {
 
     private fun requestPermission() {
         if (!cameraPermissionHelper.hasCameraPermission(this)) {
-            cameraPermissionHelper.requestCameraPermission(this);
+            cameraPermissionHelper.requestCameraPermission(this)
             return
+        } else {
+            verifyArCoreAPK()
         }
     }
 
@@ -105,40 +105,71 @@ class ARDrawingActivity : AppCompatActivity(), ARDrawingInterface {
         }
     }
 
-    fun selectRenderable() {
+    private fun setArFragmentListener() {
         MaterialFactory.makeOpaqueWithColor(this, Color(android.graphics.Color.RED))
             .thenAccept { material ->
                 selectedRenderable =
-                    ShapeFactory.makeSphere(0.1f, Vector3(0f, 0.15f, 0.0f), material)
+                    ShapeFactory.makeSphere(0.01f, Vector3(0f, 0f, 0.0f), material)
+                teste()
             }
             .exceptionally { t ->
                 Toast.makeText(this, t.message, Toast.LENGTH_LONG).show()
                 null
             }
+    }
 
-        arFragment.setOnTapArPlaneListener { hitResult, plane, motionEvent ->
-            val anchor = hitResult.createAnchor()
-            val node = AnchorNode(anchor)
-            node.setParent(arFragment.arSceneView.scene)
+    private fun teste() {
+        arFragment.arSceneView.setOnTouchListener { _, _ ->
+            if (arFragment.arSceneView.arFrame?.camera?.trackingState == TrackingState.TRACKING) {
+                try {
+                    Log.d("tatata", "clicando")
 
-            renderModel(node)
+                    val anchor = mSession?.createAnchor(
+                        arFragment.arSceneView.arFrame?.camera?.pose?.compose(
+                            Pose.makeTranslation(0f, 0f, -1f)
+                        )?.extractTranslation()
+                    )
+
+                    if (anchorNode == null) anchorNode = AnchorNode(anchor)
+
+                    anchorNode?.setParent(arFragment.arSceneView.scene)
+                    renderModel(anchorNode!!)
+
+                } catch (e: Exception) {
+                    Toast.makeText(this, e.message, Toast.LENGTH_LONG).show()
+                }
+            }
+            true
         }
+    }
+
+    private fun renderModel(node: AnchorNode) {
+        val model = Node()
+        model.setParent(node)
+        model.renderable = selectedRenderable
+        model.light = null
+        model.worldPosition = Vector3(0f, 0f, -0.5f)
     }
 
     override fun startDrawing() {
-        arFragment.setOnSessionInitializationListener {
-            val anchor = it.createAnchor(Pose.IDENTITY)
-            val node = AnchorNode(anchor)
-            node.setParent(arFragment.arSceneView.scene)
+        if (arFragment.arSceneView.arFrame?.camera?.trackingState == TrackingState.TRACKING) {
+            try {
+                Log.d("tatata", "clicando")
 
-            renderModel(node)
+                val anchor = mSession?.createAnchor(
+                    arFragment.arSceneView.arFrame?.camera?.pose?.compose(
+                        Pose.makeTranslation(0f, 0f, -1f)
+                    )?.extractTranslation()
+                )
+
+                if (anchorNode == null) anchorNode = AnchorNode(anchor)
+
+                anchorNode?.setParent(arFragment.arSceneView.scene)
+                renderModel(anchorNode!!)
+
+            } catch (e: Exception) {
+                Toast.makeText(this, e.message, Toast.LENGTH_LONG).show()
+            }
         }
-    }
-
-    private fun renderModel(node: Node) {
-        val model = TransformableNode(arFragment.transformationSystem)
-        model.setParent(node)
-        model.renderable = selectedRenderable
-        model.select()
     }
 }
